@@ -10,7 +10,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-DATA = Path(__file__).resolve().parent / "data"
+BASE = Path(__file__).resolve().parent
+DATA = BASE / "data" if (BASE / "data").exists() else BASE
 VACAS = 20
 PRECIO_LITRO = 2200
 DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
