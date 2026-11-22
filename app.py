@@ -1,5 +1,3 @@
-
-
 """Dashboard de exploración y análisis económico de una finca lechera.
 
 La aplicación separa los gastos registrados de los escenarios simulados.
@@ -27,12 +25,7 @@ DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Doming
 # permanentes: se pierden cuando la app se reinicia. Los datos oficiales son
 # los CSV del repositorio de GitHub.
 EN_LA_NUBE = BASE.as_posix().startswith("/mount/src")
-AVISO_NUBE = (
-    "Modo demostración: lo que registres aquí sirve para probar la app, pero "
-    "se pierde cuando se reinicia. Los datos oficiales están en los CSV del "
-    "repositorio de GitHub. Para guardar datos de forma permanente, usa la "
-    "app en el computador."
-)
+
 
 st.set_page_config(page_title="Proyecto Lechero", page_icon="🐄", layout="wide")
 
