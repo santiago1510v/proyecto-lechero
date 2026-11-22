@@ -1,3 +1,5 @@
+
+
 """Dashboard de exploración y análisis económico de una finca lechera.
 
 La aplicación separa los gastos registrados de los escenarios simulados.
@@ -21,6 +23,10 @@ ARCHIVO_VACAS = DATA / "vacas.csv"
 ARCHIVO_CONFIG = DATA / "config_finca.json"
 PRECIO_REFERENCIA = 2200
 DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+# En Streamlit Cloud los cambios en archivos no se conservan y cualquiera con
+# el link podría modificar los datos: allí la app queda en solo lectura.
+# En tu computador (ruta distinta) siguen disponibles Registrar y Administrar.
+SOLO_LECTURA = BASE.as_posix().startswith("/mount/src")
 
 st.set_page_config(page_title="Proyecto Lechero", page_icon="🐄", layout="wide")
 
@@ -109,7 +115,8 @@ def dias_del_periodo_en_mes(mes, inicio, fin):
 
 
 def resumen_mensual(produccion, gastos, precio_litro, gasolina_mensual,
-                    ajuste_alimento, mano_obra_mensual, inicio, fin):
+                    medicamentos_mensual, ajuste_alimento, mano_obra_mensual,
+                    inicio, fin):
     """Construye resultados reales y escenarios sin mezclar sus conceptos."""
     mensual = (produccion.groupby("mes", as_index=False)
                .agg(dias_registrados=("litros", "count"), litros=("litros", "sum")))
@@ -122,7 +129,7 @@ def resumen_mensual(produccion, gastos, precio_litro, gasolina_mensual,
 
     mensual["alimento_comprado"] = mensual["mes"].map(
         lambda mes: gasto_concepto(mes, "alimento"))
-    mensual["medicamentos"] = mensual["mes"].map(
+    mensual["medicamentos_registrados"] = mensual["mes"].map(
         lambda mes: gasto_concepto(mes, "medicamentos"))
     mensual["gasolina_registrada"] = mensual["mes"].map(
         lambda mes: gasto_concepto(mes, "gasolina"))
@@ -139,6 +146,12 @@ def resumen_mensual(produccion, gastos, precio_litro, gasolina_mensual,
         mensual["gasolina_registrada"] > 0,
         mensual["gasolina_registrada"],
         gasolina_mensual * mensual["fraccion_mes_seleccionada"]
+    )
+    # Igual con los medicamentos: el registro real reemplaza al estimado.
+    mensual["medicamentos"] = np.where(
+        mensual["medicamentos_registrados"] > 0,
+        mensual["medicamentos_registrados"],
+        medicamentos_mensual * mensual["fraccion_mes_seleccionada"]
     )
 
     gastos_conocidos = {"alimento", "medicamentos", "gasolina"}
@@ -188,7 +201,8 @@ def guardar_csv(df, ruta, columnas):
 
 def cargar_configuracion():
     """Carga parámetros básicos persistidos en un archivo JSON."""
-    valores = {"vacas_en_produccion": 20, "gasolina_mensual": 400000, "precio_litro": 2200}
+    valores = {"vacas_en_produccion": 20, "gasolina_mensual": 400000,
+               "medicamentos_mensual": 300000, "precio_litro": 2200}
     if ARCHIVO_CONFIG.exists():
         try:
             with open(ARCHIVO_CONFIG, "r", encoding="utf-8") as archivo:
@@ -406,9 +420,10 @@ def administrar_datos():
         with st.form("form_config_finca"):
             vacas = st.number_input("Vacas actualmente en producción", min_value=0, max_value=10000, value=int(config["vacas_en_produccion"]), step=1)
             gasolina = st.number_input("Gasolina fija mensual (COP)", min_value=0, value=int(config["gasolina_mensual"]), step=10000)
+            medicinas = st.number_input("Medicamentos estimados al mes (COP)", min_value=0, value=int(config["medicamentos_mensual"]), step=10000)
             precio = st.number_input("Precio de venta por litro (COP)", min_value=0, value=int(config["precio_litro"]), step=50)
             if st.form_submit_button("Guardar configuración", type="primary"):
-                guardar_configuracion({"vacas_en_produccion": int(vacas), "gasolina_mensual": int(gasolina), "precio_litro": int(precio)})
+                guardar_configuracion({"vacas_en_produccion": int(vacas), "gasolina_mensual": int(gasolina), "medicamentos_mensual": int(medicinas), "precio_litro": int(precio)})
                 st.success("Configuración guardada.")
                 st.rerun()
 
@@ -474,6 +489,11 @@ def main():
         value=int(configuracion["gasolina_mensual"]), step=10000,
         help="Ingresa el valor real mensual. Si hay gasolina registrada en el CSV para un mes, se prioriza ese registro."
     )
+    medicamentos_mensual = st.sidebar.number_input(
+        "Medicamentos estimados al mes (COP)", min_value=0, max_value=10000000,
+        value=int(configuracion["medicamentos_mensual"]), step=10000,
+        help="Estimación del productor. Si hay medicamentos registrados en el CSV para un mes, se usa ese registro."
+    )
     ajuste_alimento = st.sidebar.slider(
         "Variación simulada del costo de alimento (%)", -50, 100, 0, step=5
     )
@@ -493,8 +513,8 @@ def main():
     prod["promedio_movil"] = prod["litros"].rolling(7, min_periods=1).mean()
     prod["atipico"] = marcar_atipicos(prod["litros"])
     mensual = resumen_mensual(
-        prod, gas, precio, gasolina_mensual, ajuste_alimento,
-        mano_obra, inicio, fin
+        prod, gas, precio, gasolina_mensual, medicamentos_mensual,
+        ajuste_alimento, mano_obra, inicio, fin
     )
 
     # Resumen principal.
@@ -512,19 +532,22 @@ def main():
     metricas = st.columns(4)
     metricas[0].metric("Leche registrada", f"{total_litros:,.1f} L")
     metricas[1].metric("Ingresos estimados", dinero(ingresos))
-    metricas[2].metric("Gastos registrados", dinero(costos))
+    metricas[2].metric("Gastos del periodo", dinero(costos))
     metricas[3].metric("Resultado estimado", dinero(utilidad), f"Margen: {margen:.1f}%")
 
     st.info(
         f"Inventario configurado: {vacas_en_produccion} vacas en producción. "
         "Criterio contable: el alimento se muestra como compra registrada (salida de dinero), "
-        "no como consumo exacto del mes. Los medicamentos solo se cuentan cuando aparecen "
-        "en gastos.csv. La mano de obra familiar no se descuenta como gasto real."
+        "no como consumo exacto del mes. Gasolina y medicamentos son estimaciones mensuales "
+        "del productor; si hay un registro real en gastos.csv, se usa ese. "
+        "La mano de obra familiar no se descuenta como gasto real."
     )
 
-    tab_resumen, tab_prod, tab_fin, tab_registrar, tab_datos, tab_admin = st.tabs(
-        ["🏠 Resumen", "🥛 Producción", "💰 Finanzas", "➕ Registrar", "📋 Datos", "✏️ Administrar"]
-    )
+    etiquetas = ["🏠 Resumen", "🥛 Producción", "💰 Finanzas", "📋 Datos"]
+    if not SOLO_LECTURA:
+        etiquetas += ["➕ Registrar", "✏️ Administrar"]
+    pestanas = st.tabs(etiquetas)
+    tab_resumen, tab_prod, tab_fin, tab_datos = pestanas[:4]
 
     with tab_resumen:
         izquierda, derecha = st.columns([1.35, 1])
@@ -598,7 +621,7 @@ def main():
 
     with tab_fin:
         st.subheader("Ingresos, compras y resultado económico")
-        st.caption("Los ingresos son estimados con el precio seleccionado; los gastos provienen del CSV y del valor fijo de gasolina configurado.")
+        st.caption("Los ingresos son estimados con el precio seleccionado; el alimento viene del CSV y la gasolina y los medicamentos son estimaciones mensuales.")
         izquierda, derecha = st.columns(2)
         izquierda.plotly_chart(
             px.bar(mensual, x="mes", y=["ingresos_estimados", "costos_registrados"],
@@ -656,9 +679,6 @@ def main():
             ]
             st.dataframe(mensual[columnas_tabla].round(0), use_container_width=True, hide_index=True)
 
-    with tab_registrar:
-        registrar_datos_rapidos()
-
     with tab_datos:
         st.subheader("Registros utilizados")
         st.write("Producción diaria")
@@ -680,8 +700,11 @@ def main():
                 file_name="gastos_filtrados.csv", mime="text/csv"
             )
 
-    with tab_admin:
-        administrar_datos()
+    if not SOLO_LECTURA:
+        with pestanas[4]:
+            registrar_datos_rapidos()
+        with pestanas[5]:
+            administrar_datos()
 
     with st.expander("Acerca de los datos y sus limitaciones"):
         st.write(
