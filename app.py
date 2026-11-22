@@ -4,6 +4,7 @@ La aplicación separa los gastos registrados de los escenarios simulados.
 Los datos se leen desde produccion_diaria.csv y gastos.csv.
 """
 from pathlib import Path
+import json
 import unicodedata
 
 import numpy as np
@@ -16,8 +17,9 @@ BASE = Path(__file__).resolve().parent
 DATA = BASE / "data" if (BASE / "data").exists() else BASE
 ARCHIVO_PRODUCCION = DATA / "produccion_diaria.csv"
 ARCHIVO_GASTOS = DATA / "gastos.csv"
+ARCHIVO_VACAS = DATA / "vacas.csv"
+ARCHIVO_CONFIG = DATA / "config_finca.json"
 PRECIO_REFERENCIA = 2200
-VACAS_EN_PRODUCCION = 20  # Confirmar que sean vacas en ordeño.
 DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 
 st.set_page_config(page_title="Proyecto Lechero", page_icon="🐄", layout="wide")
@@ -35,7 +37,7 @@ def normalizar_texto(valor):
 
 @st.cache_data
 
-def cargar_produccion(ruta):
+def cargar_produccion(ruta, vacas_en_produccion=20):
     """Carga, valida y organiza la producción diaria."""
     df = pd.read_csv(ruta)
     requeridas = {"fecha", "litros"}
@@ -50,7 +52,7 @@ def cargar_produccion(ruta):
     df = df.sort_values("fecha").reset_index(drop=True)
     df["mes"] = df["fecha"].dt.to_period("M").astype(str)
     df["dia_semana"] = df["fecha"].dt.dayofweek.map(lambda numero: DIAS[numero])
-    df["litros_por_vaca"] = df["litros"] / VACAS_EN_PRODUCCION
+    df["litros_por_vaca"] = df["litros"] / max(vacas_en_produccion, 1)
     return df
 
 
@@ -172,11 +174,143 @@ def marcar_atipicos(valores):
     return np.abs(puntuacion) > 3.5
 
 
+# ---------------------- Edición y guardado de datos ----------------------
+def guardar_csv(df, ruta, columnas):
+    """Guarda una tabla editable en CSV y limpia la caché de lectura."""
+    salida = df.copy()
+    for columna in columnas:
+        if columna not in salida.columns:
+            salida[columna] = ""
+    salida = salida[columnas]
+    salida.to_csv(ruta, index=False, encoding="utf-8-sig")
+    st.cache_data.clear()
+
+
+def cargar_configuracion():
+    """Carga parámetros básicos persistidos en un archivo JSON."""
+    valores = {"vacas_en_produccion": 20, "gasolina_mensual": 400000, "precio_litro": 2200}
+    if ARCHIVO_CONFIG.exists():
+        try:
+            with open(ARCHIVO_CONFIG, "r", encoding="utf-8") as archivo:
+                valores.update(json.load(archivo))
+        except (OSError, json.JSONDecodeError):
+            pass
+    return valores
+
+
+def guardar_configuracion(valores):
+    """Guarda la configuración de la finca."""
+    DATA.mkdir(parents=True, exist_ok=True)
+    with open(ARCHIVO_CONFIG, "w", encoding="utf-8") as archivo:
+        json.dump(valores, archivo, ensure_ascii=False, indent=2)
+
+
+def cargar_vacas():
+    """Carga el registro individual de animales, si el usuario lo ha creado."""
+    columnas = ["codigo", "nombre", "estado", "fecha_ingreso", "observaciones"]
+    if ARCHIVO_VACAS.exists():
+        try:
+            return pd.read_csv(ARCHIVO_VACAS).reindex(columns=columnas)
+        except (pd.errors.ParserError, OSError):
+            pass
+    return pd.DataFrame(columns=columnas)
+
+
+def administrar_datos():
+    """Permite agregar, editar y eliminar registros y guardarlos en archivos."""
+    st.subheader("Administrar información de la finca")
+    st.caption("Edita las celdas directamente. Usa las filas nuevas para agregar y el icono de papelera para eliminar. Guarda cada tabla antes de salir.")
+
+    seccion = st.radio("¿Qué deseas administrar?", ["Producción diaria", "Gastos", "Inventario de vacas", "Configuración"], horizontal=True)
+
+    if seccion == "Producción diaria":
+        st.write("**Registros de leche**")
+        base = pd.read_csv(ARCHIVO_PRODUCCION) if ARCHIVO_PRODUCCION.exists() else pd.DataFrame(columns=["fecha", "litros"])
+        base = base.reindex(columns=["fecha", "litros"])
+        editado = st.data_editor(base, num_rows="dynamic", use_container_width=True, key="editor_produccion", column_config={
+            "fecha": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY"),
+            "litros": st.column_config.NumberColumn("Litros", min_value=0.0, step=1.0)
+        })
+        if st.button("Guardar producción", type="primary"):
+            validar = editado.copy()
+            validar["fecha"] = pd.to_datetime(validar["fecha"], errors="coerce")
+            validar["litros"] = pd.to_numeric(validar["litros"], errors="coerce")
+            if validar[["fecha", "litros"]].isna().any().any() or (validar["litros"] < 0).any():
+                st.error("Revisa las fechas y los litros: no pueden estar vacíos ni ser negativos.")
+            else:
+                guardar_csv(validar.assign(fecha=validar["fecha"].dt.strftime("%Y-%m-%d")), ARCHIVO_PRODUCCION, ["fecha", "litros"])
+                st.success("Producción guardada.")
+                st.rerun()
+
+    elif seccion == "Gastos":
+        st.write("**Compras y gastos reales**")
+        base = pd.read_csv(ARCHIVO_GASTOS) if ARCHIVO_GASTOS.exists() else pd.DataFrame(columns=["fecha", "concepto", "valor"])
+        base = base.reindex(columns=["fecha", "concepto", "valor"])
+        editado = st.data_editor(base, num_rows="dynamic", use_container_width=True, key="editor_gastos", column_config={
+            "fecha": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY"),
+            "concepto": st.column_config.SelectboxColumn("Concepto", options=["Alimento", "Gasolina", "Medicamentos", "Otros"], required=True),
+            "valor": st.column_config.NumberColumn("Valor (COP)", min_value=0, step=1000)
+        })
+        if st.button("Guardar gastos", type="primary"):
+            validar = editado.copy()
+            validar["fecha"] = pd.to_datetime(validar["fecha"], errors="coerce")
+            validar["valor"] = pd.to_numeric(validar["valor"], errors="coerce")
+            if validar[["fecha", "concepto", "valor"]].isna().any().any() or (validar["valor"] < 0).any():
+                st.error("Revisa fecha, concepto y valor. No pueden estar vacíos ni ser negativos.")
+            else:
+                guardar_csv(validar.assign(fecha=validar["fecha"].dt.strftime("%Y-%m-%d")), ARCHIVO_GASTOS, ["fecha", "concepto", "valor"])
+                st.success("Gastos guardados.")
+                st.rerun()
+
+    elif seccion == "Inventario de vacas":
+        st.write("**Registro individual (no es necesario completar datos que no conozcas)**")
+        st.caption("Puedes agregar animales, cambiar su estado o eliminar registros. Los estados disponibles permiten distinguir vacas en producción, secas y animales jóvenes.")
+        base = cargar_vacas()
+        editado = st.data_editor(base, num_rows="dynamic", use_container_width=True, key="editor_vacas", column_config={
+            "codigo": st.column_config.TextColumn("Código", help="Código interno, por ejemplo V01"),
+            "nombre": st.column_config.TextColumn("Nombre"),
+            "estado": st.column_config.SelectboxColumn("Estado", options=["Producción", "Seca", "Novilla", "Ternera"], required=True),
+            "fecha_ingreso": st.column_config.DateColumn("Fecha de ingreso", format="DD/MM/YYYY"),
+            "observaciones": st.column_config.TextColumn("Observaciones")
+        })
+        if st.button("Guardar inventario de vacas", type="primary"):
+            validar = editado.copy()
+            validar = validar.dropna(how="all")
+            if validar["codigo"].fillna("").astype(str).str.strip().eq("").any():
+                st.error("Cada animal debe tener un código único.")
+            elif validar["codigo"].duplicated().any():
+                st.error("Hay códigos repetidos. Cada vaca debe tener un código diferente.")
+            else:
+                validar.to_csv(ARCHIVO_VACAS, index=False, encoding="utf-8-sig")
+                st.success("Inventario guardado.")
+                st.rerun()
+
+    else:
+        st.write("**Parámetros generales**")
+        config = cargar_configuracion()
+        with st.form("form_config_finca"):
+            vacas = st.number_input("Vacas actualmente en producción", min_value=0, max_value=10000, value=int(config["vacas_en_produccion"]), step=1)
+            gasolina = st.number_input("Gasolina fija mensual (COP)", min_value=0, value=int(config["gasolina_mensual"]), step=10000)
+            precio = st.number_input("Precio de venta por litro (COP)", min_value=0, value=int(config["precio_litro"]), step=50)
+            if st.form_submit_button("Guardar configuración", type="primary"):
+                guardar_configuracion({"vacas_en_produccion": int(vacas), "gasolina_mensual": int(gasolina), "precio_litro": int(precio)})
+                st.success("Configuración guardada.")
+                st.rerun()
+
+    st.divider()
+    st.download_button("Descargar copia de seguridad de producción", ARCHIVO_PRODUCCION.read_bytes() if ARCHIVO_PRODUCCION.exists() else b"", "produccion_diaria_backup.csv", disabled=not ARCHIVO_PRODUCCION.exists())
+    st.download_button("Descargar copia de seguridad de gastos", ARCHIVO_GASTOS.read_bytes() if ARCHIVO_GASTOS.exists() else b"", "gastos_backup.csv", disabled=not ARCHIVO_GASTOS.exists())
+    if ARCHIVO_VACAS.exists():
+        st.download_button("Descargar inventario de vacas", ARCHIVO_VACAS.read_bytes(), "vacas_backup.csv")
+
+
 # ------------------------------ Interfaz ------------------------------
 def main():
     """Presenta el análisis interactivo de producción y finanzas."""
     st.title("🐄 Proyecto Lechero")
     st.caption("Exploración de datos y análisis económico de una finca lechera de Boyacá")
+    configuracion = cargar_configuracion()
+    vacas_en_produccion = int(configuracion["vacas_en_produccion"])
 
     if not ARCHIVO_PRODUCCION.exists():
         st.error(f"No se encontró el archivo: {ARCHIVO_PRODUCCION.name}")
@@ -184,7 +318,7 @@ def main():
         st.stop()
 
     try:
-        produccion = cargar_produccion(str(ARCHIVO_PRODUCCION))
+        produccion = cargar_produccion(str(ARCHIVO_PRODUCCION), vacas_en_produccion)
         gastos = cargar_gastos(str(ARCHIVO_GASTOS))
     except (ValueError, pd.errors.ParserError) as error:
         st.error(f"No se pudieron cargar los datos: {error}")
@@ -214,12 +348,12 @@ def main():
     st.sidebar.header("Parámetros del escenario")
     precio = st.sidebar.number_input(
         "Precio usado por litro (COP)", min_value=0, max_value=100000,
-        value=PRECIO_REFERENCIA, step=50,
+        value=int(configuracion["precio_litro"]), step=50,
         help="Se usa para estimar ingresos. Si el precio cambió durante el periodo, el resultado es aproximado."
     )
     gasolina_mensual = st.sidebar.number_input(
         "Gasolina fija mensual (COP)", min_value=0, max_value=10000000,
-        value=0, step=10000,
+        value=int(configuracion["gasolina_mensual"]), step=10000,
         help="Ingresa el valor real mensual. Si hay gasolina registrada en el CSV para un mes, se prioriza ese registro."
     )
     ajuste_alimento = st.sidebar.slider(
@@ -264,13 +398,14 @@ def main():
     metricas[3].metric("Resultado estimado", dinero(utilidad), f"Margen: {margen:.1f}%")
 
     st.info(
+        f"Inventario configurado: {vacas_en_produccion} vacas en producción. "
         "Criterio contable: el alimento se muestra como compra registrada (salida de dinero), "
         "no como consumo exacto del mes. Los medicamentos solo se cuentan cuando aparecen "
         "en gastos.csv. La mano de obra familiar no se descuenta como gasto real."
     )
 
-    tab_resumen, tab_prod, tab_fin, tab_datos = st.tabs(
-        ["🏠 Resumen", "🥛 Producción", "💰 Finanzas", "📋 Datos"]
+    tab_resumen, tab_prod, tab_fin, tab_datos, tab_admin = st.tabs(
+        ["🏠 Resumen", "🥛 Producción", "💰 Finanzas", "📋 Datos", "✏️ Administrar"]
     )
 
     with tab_resumen:
@@ -423,6 +558,9 @@ def main():
                 gas[["fecha", "concepto", "valor"]].to_csv(index=False).encode("utf-8-sig"),
                 file_name="gastos_filtrados.csv", mime="text/csv"
             )
+
+    with tab_admin:
+        administrar_datos()
 
     with st.expander("Acerca de los datos y sus limitaciones"):
         st.write(
