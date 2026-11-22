@@ -223,6 +223,88 @@ def cargar_vacas():
     return base
 
 
+def registrar_datos_rapidos():
+    """Formularios sencillos para registrar la leche y los gastos sin editar tablas."""
+    st.subheader("Agregar información de la finca")
+    st.caption("Registra aquí la producción de leche y los gastos del día. Los datos se guardan en los archivos CSV de la aplicación.")
+
+    tab_leche, tab_gastos = st.tabs(["🥛 Registrar leche", "💰 Registrar gasto"])
+
+    with tab_leche:
+        st.write("**Producción del día**")
+        st.caption("Escribe por separado los litros del ordeño de la mañana y de la tarde. La aplicación guardará la suma como producción diaria.")
+        with st.form("form_registro_leche", clear_on_submit=True):
+            fecha_leche = st.date_input("Fecha", value=pd.Timestamp.today().date(), key="fecha_registro_leche")
+            col_manana, col_tarde = st.columns(2)
+            with col_manana:
+                litros_manana = st.number_input("Litros de la mañana", min_value=0.0, max_value=10000.0, value=0.0, step=0.5)
+            with col_tarde:
+                litros_tarde = st.number_input("Litros de la tarde", min_value=0.0, max_value=10000.0, value=0.0, step=0.5)
+            total_dia = litros_manana + litros_tarde
+            st.metric("Total de leche del día", f"{total_dia:,.1f} litros")
+            enviar_leche = st.form_submit_button("Guardar producción de leche", type="primary")
+
+        if enviar_leche:
+            if total_dia <= 0:
+                st.error("Ingresa una cantidad mayor que cero para guardar la producción.")
+            else:
+                DATA.mkdir(parents=True, exist_ok=True)
+                if ARCHIVO_PRODUCCION.exists():
+                    base = pd.read_csv(ARCHIVO_PRODUCCION)
+                else:
+                    base = pd.DataFrame(columns=["fecha", "litros"])
+                base = base.reindex(columns=["fecha", "litros"])
+                base["fecha"] = pd.to_datetime(base["fecha"], errors="coerce")
+                base["litros"] = pd.to_numeric(base["litros"], errors="coerce")
+                base = base.dropna(subset=["fecha", "litros"])
+                # Un registro por fecha: si ya existe, se reemplaza por el total actualizado del día.
+                fecha_objetivo = pd.Timestamp(fecha_leche)
+                base = base[base["fecha"].dt.date != fecha_leche]
+                nuevo = pd.DataFrame({"fecha": [fecha_objetivo], "litros": [total_dia]})
+                base = pd.concat([base, nuevo], ignore_index=True).sort_values("fecha")
+                base["fecha"] = base["fecha"].dt.strftime("%Y-%m-%d")
+                base.to_csv(ARCHIVO_PRODUCCION, index=False, encoding="utf-8-sig")
+                st.cache_data.clear()
+                st.session_state["mensaje_registro"] = f"Producción guardada: {total_dia:,.1f} litros para el {fecha_leche:%d/%m/%Y}."
+                st.rerun()
+
+    with tab_gastos:
+        st.write("**Registrar una compra o gasto real**")
+        with st.form("form_registro_gasto", clear_on_submit=True):
+            fecha_gasto = st.date_input("Fecha del gasto", value=pd.Timestamp.today().date(), key="fecha_registro_gasto")
+            concepto_opcion = st.selectbox("Tipo de gasto", ["Alimento", "Gasolina", "Medicamentos", "Otros"])
+            concepto_otro = ""
+            if concepto_opcion == "Otros":
+                concepto_otro = st.text_input("¿Cuál gasto?")
+            valor_gasto = st.number_input("Valor pagado (COP)", min_value=0, max_value=100000000, value=0, step=1000)
+            enviar_gasto = st.form_submit_button("Guardar gasto", type="primary")
+
+        if enviar_gasto:
+            concepto_final = concepto_otro.strip() if concepto_opcion == "Otros" else concepto_opcion
+            if not concepto_final:
+                st.error("Escribe el nombre del gasto.")
+            elif valor_gasto <= 0:
+                st.error("Ingresa un valor mayor que cero.")
+            else:
+                DATA.mkdir(parents=True, exist_ok=True)
+                if ARCHIVO_GASTOS.exists():
+                    base = pd.read_csv(ARCHIVO_GASTOS)
+                else:
+                    base = pd.DataFrame(columns=["fecha", "concepto", "valor"])
+                base = base.reindex(columns=["fecha", "concepto", "valor"])
+                nuevo = pd.DataFrame({
+                    "fecha": [pd.Timestamp(fecha_gasto).strftime("%Y-%m-%d")],
+                    "concepto": [concepto_final],
+                    "valor": [int(valor_gasto)],
+                })
+                pd.concat([base, nuevo], ignore_index=True).to_csv(
+                    ARCHIVO_GASTOS, index=False, encoding="utf-8-sig"
+                )
+                st.cache_data.clear()
+                st.session_state["mensaje_registro"] = f"Gasto guardado: {concepto_final} por {dinero(valor_gasto)}."
+                st.rerun()
+
+
 def administrar_datos():
     """Permite agregar, editar y eliminar registros y guardarlos en archivos."""
     st.subheader("Administrar información de la finca")
@@ -342,6 +424,9 @@ def main():
     """Presenta el análisis interactivo de producción y finanzas."""
     st.title("🐄 Proyecto Lechero")
     st.caption("Exploración de datos y análisis económico de una finca lechera de Boyacá")
+    mensaje_registro = st.session_state.pop("mensaje_registro", None)
+    if mensaje_registro:
+        st.success(mensaje_registro)
     configuracion = cargar_configuracion()
     vacas_en_produccion = int(configuracion["vacas_en_produccion"])
 
@@ -437,8 +522,8 @@ def main():
         "en gastos.csv. La mano de obra familiar no se descuenta como gasto real."
     )
 
-    tab_resumen, tab_prod, tab_fin, tab_datos, tab_admin = st.tabs(
-        ["🏠 Resumen", "🥛 Producción", "💰 Finanzas", "📋 Datos", "✏️ Administrar"]
+    tab_resumen, tab_prod, tab_fin, tab_registrar, tab_datos, tab_admin = st.tabs(
+        ["🏠 Resumen", "🥛 Producción", "💰 Finanzas", "➕ Registrar", "📋 Datos", "✏️ Administrar"]
     )
 
     with tab_resumen:
@@ -570,6 +655,9 @@ def main():
                 "utilidad_registrada", "costos_escenario", "utilidad_escenario"
             ]
             st.dataframe(mensual[columnas_tabla].round(0), use_container_width=True, hide_index=True)
+
+    with tab_registrar:
+        registrar_datos_rapidos()
 
     with tab_datos:
         st.subheader("Registros utilizados")
