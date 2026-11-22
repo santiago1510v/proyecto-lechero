@@ -206,14 +206,21 @@ def guardar_configuracion(valores):
 
 
 def cargar_vacas():
-    """Carga el registro individual de animales, si el usuario lo ha creado."""
+    """Carga el registro individual de animales con tipos compatibles con el editor."""
     columnas = ["codigo", "nombre", "estado", "fecha_ingreso", "observaciones"]
     if ARCHIVO_VACAS.exists():
         try:
-            return pd.read_csv(ARCHIVO_VACAS).reindex(columns=columnas)
+            base = pd.read_csv(ARCHIVO_VACAS).reindex(columns=columnas)
         except (pd.errors.ParserError, OSError):
-            pass
-    return pd.DataFrame(columns=columnas)
+            base = pd.DataFrame(columns=columnas)
+    else:
+        base = pd.DataFrame(columns=columnas)
+
+    # DateColumn requiere fechas reales, no cadenas leídas directamente del CSV.
+    base["fecha_ingreso"] = pd.to_datetime(base["fecha_ingreso"], errors="coerce")
+    for columna in ["codigo", "nombre", "estado", "observaciones"]:
+        base[columna] = base[columna].astype("string")
+    return base
 
 
 def administrar_datos():
@@ -225,8 +232,14 @@ def administrar_datos():
 
     if seccion == "Producción diaria":
         st.write("**Registros de leche**")
-        base = pd.read_csv(ARCHIVO_PRODUCCION) if ARCHIVO_PRODUCCION.exists() else pd.DataFrame(columns=["fecha", "litros"])
+        base = pd.read_csv(ARCHIVO_PRODUCCION) if ARCHIVO_PRODUCCION.exists() else pd.DataFrame({
+            "fecha": pd.Series(dtype="datetime64[ns]"),
+            "litros": pd.Series(dtype="float64"),
+        })
         base = base.reindex(columns=["fecha", "litros"])
+        # El CSV contiene fechas como texto; DateColumn necesita datetime.
+        base["fecha"] = pd.to_datetime(base["fecha"], errors="coerce")
+        base["litros"] = pd.to_numeric(base["litros"], errors="coerce").astype("float64")
         editado = st.data_editor(base, num_rows="dynamic", use_container_width=True, key="editor_produccion", column_config={
             "fecha": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY"),
             "litros": st.column_config.NumberColumn("Litros", min_value=0.0, step=1.0)
@@ -244,18 +257,31 @@ def administrar_datos():
 
     elif seccion == "Gastos":
         st.write("**Compras y gastos reales**")
-        base = pd.read_csv(ARCHIVO_GASTOS) if ARCHIVO_GASTOS.exists() else pd.DataFrame(columns=["fecha", "concepto", "valor"])
+        base = pd.read_csv(ARCHIVO_GASTOS) if ARCHIVO_GASTOS.exists() else pd.DataFrame({
+            "fecha": pd.Series(dtype="datetime64[ns]"),
+            "concepto": pd.Series(dtype="string"),
+            "valor": pd.Series(dtype="float64"),
+        })
         base = base.reindex(columns=["fecha", "concepto", "valor"])
+        # Convierte los tipos antes de pasarlos a st.data_editor.
+        base["fecha"] = pd.to_datetime(base["fecha"], errors="coerce")
+        base["concepto"] = base["concepto"].astype("string")
+        base["valor"] = pd.to_numeric(base["valor"], errors="coerce").astype("float64")
         editado = st.data_editor(base, num_rows="dynamic", use_container_width=True, key="editor_gastos", column_config={
             "fecha": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY"),
-            "concepto": st.column_config.SelectboxColumn("Concepto", options=["Alimento", "Gasolina", "Medicamentos", "Otros"], required=True),
+            # Texto libre: acepta también conceptos adicionales que use la finca.
+            "concepto": st.column_config.TextColumn("Concepto", help="Ej.: Alimento, Gasolina, Medicamentos u Otros"),
             "valor": st.column_config.NumberColumn("Valor (COP)", min_value=0, step=1000)
         })
         if st.button("Guardar gastos", type="primary"):
             validar = editado.copy()
             validar["fecha"] = pd.to_datetime(validar["fecha"], errors="coerce")
+            validar["concepto"] = validar["concepto"].astype("string").str.strip()
             validar["valor"] = pd.to_numeric(validar["valor"], errors="coerce")
-            if validar[["fecha", "concepto", "valor"]].isna().any().any() or (validar["valor"] < 0).any():
+            # Ignora filas completamente vacías que pueden quedar al añadir una fila nueva.
+            validar = validar.dropna(how="all")
+            validar = validar[~(validar["fecha"].isna() & validar["concepto"].fillna("").eq("") & validar["valor"].isna())]
+            if validar[["fecha", "concepto", "valor"]].isna().any().any() or validar["concepto"].fillna("").eq("").any() or (validar["valor"] < 0).any():
                 st.error("Revisa fecha, concepto y valor. No pueden estar vacíos ni ser negativos.")
             else:
                 guardar_csv(validar.assign(fecha=validar["fecha"].dt.strftime("%Y-%m-%d")), ARCHIVO_GASTOS, ["fecha", "concepto", "valor"])
@@ -266,21 +292,28 @@ def administrar_datos():
         st.write("**Registro individual (no es necesario completar datos que no conozcas)**")
         st.caption("Puedes agregar animales, cambiar su estado o eliminar registros. Los estados disponibles permiten distinguir vacas en producción, secas y animales jóvenes.")
         base = cargar_vacas()
+        estados_base = ["Producción", "Seca", "Novilla", "Ternera"]
+        estados_existentes = [str(v) for v in base["estado"].dropna().tolist() if str(v).strip()]
+        estados = list(dict.fromkeys(estados_base + estados_existentes))
+        base["estado"] = pd.Categorical(base["estado"].fillna(""), categories=estados + ([""] if "" not in estados else []))
         editado = st.data_editor(base, num_rows="dynamic", use_container_width=True, key="editor_vacas", column_config={
             "codigo": st.column_config.TextColumn("Código", help="Código interno, por ejemplo V01"),
             "nombre": st.column_config.TextColumn("Nombre"),
-            "estado": st.column_config.SelectboxColumn("Estado", options=["Producción", "Seca", "Novilla", "Ternera"], required=True),
+            "estado": st.column_config.SelectboxColumn("Estado", options=estados, required=True),
             "fecha_ingreso": st.column_config.DateColumn("Fecha de ingreso", format="DD/MM/YYYY"),
             "observaciones": st.column_config.TextColumn("Observaciones")
         })
         if st.button("Guardar inventario de vacas", type="primary"):
             validar = editado.copy()
             validar = validar.dropna(how="all")
-            if validar["codigo"].fillna("").astype(str).str.strip().eq("").any():
+            validar["codigo"] = validar["codigo"].astype("string").str.strip()
+            validar["fecha_ingreso"] = pd.to_datetime(validar["fecha_ingreso"], errors="coerce")
+            if validar["codigo"].fillna("").eq("").any():
                 st.error("Cada animal debe tener un código único.")
             elif validar["codigo"].duplicated().any():
                 st.error("Hay códigos repetidos. Cada vaca debe tener un código diferente.")
             else:
+                validar["fecha_ingreso"] = validar["fecha_ingreso"].dt.strftime("%Y-%m-%d")
                 validar.to_csv(ARCHIVO_VACAS, index=False, encoding="utf-8-sig")
                 st.success("Inventario guardado.")
                 st.rerun()
