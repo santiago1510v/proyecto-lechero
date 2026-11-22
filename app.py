@@ -23,10 +23,16 @@ ARCHIVO_VACAS = DATA / "vacas.csv"
 ARCHIVO_CONFIG = DATA / "config_finca.json"
 PRECIO_REFERENCIA = 2200
 DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
-# En Streamlit Cloud los cambios en archivos no se conservan y cualquiera con
-# el link podría modificar los datos: allí la app queda en solo lectura.
-# En tu computador (ruta distinta) siguen disponibles Registrar y Administrar.
-SOLO_LECTURA = BASE.as_posix().startswith("/mount/src")
+# En Streamlit Cloud (ruta /mount/src) los cambios hechos desde la app no son
+# permanentes: se pierden cuando la app se reinicia. Los datos oficiales son
+# los CSV del repositorio de GitHub.
+EN_LA_NUBE = BASE.as_posix().startswith("/mount/src")
+AVISO_NUBE = (
+    "Modo demostración: lo que registres aquí sirve para probar la app, pero "
+    "se pierde cuando se reinicia. Los datos oficiales están en los CSV del "
+    "repositorio de GitHub. Para guardar datos de forma permanente, usa la "
+    "app en el computador."
+)
 
 st.set_page_config(page_title="Proyecto Lechero", page_icon="🐄", layout="wide")
 
@@ -543,10 +549,10 @@ def main():
         "La mano de obra familiar no se descuenta como gasto real."
     )
 
-    etiquetas = ["🏠 Resumen", "🥛 Producción", "💰 Finanzas", "📋 Datos"]
-    if not SOLO_LECTURA:
-        etiquetas += ["➕ Registrar", "✏️ Administrar"]
-    pestanas = st.tabs(etiquetas)
+    pestanas = st.tabs(
+        ["🏠 Resumen", "🥛 Producción", "💰 Finanzas", "📋 Datos",
+         "➕ Registrar", "✏️ Administrar"]
+    )
     tab_resumen, tab_prod, tab_fin, tab_datos = pestanas[:4]
 
     with tab_resumen:
@@ -700,11 +706,12 @@ def main():
                 file_name="gastos_filtrados.csv", mime="text/csv"
             )
 
-    if not SOLO_LECTURA:
-        with pestanas[4]:
-            registrar_datos_rapidos()
-        with pestanas[5]:
-            administrar_datos()
+    for pestana, funcion in ((pestanas[4], registrar_datos_rapidos),
+                             (pestanas[5], administrar_datos)):
+        with pestana:
+            if EN_LA_NUBE:
+                st.warning(AVISO_NUBE)
+            funcion()
 
     with st.expander("Acerca de los datos y sus limitaciones"):
         st.write(
