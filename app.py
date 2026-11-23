@@ -56,25 +56,28 @@ def leer_csv_seguro(ruta, columnas):
         return pd.DataFrame(columns=columnas)
 
 
-@st.cache_data
 
+@st.cache_data
 def cargar_produccion(ruta):
     df = leer_csv_seguro(ruta, ["fecha", "litros"])
     df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
     df["litros"] = pd.to_numeric(df["litros"], errors="coerce")
     df = df.dropna(subset=["fecha", "litros"])
     df = df[df["litros"] >= 0]
+
     if df.empty:
         return pd.DataFrame(columns=["fecha", "litros", "mes", "dia_semana"])
-    # Varios registros de una misma fecha se suman para obtener el total diario.
+
+    # Varios registros de una misma fecha se suman.
     df = df.groupby("fecha", as_index=False)["litros"].sum()
     df = df.sort_values("fecha").reset_index(drop=True)
     df["mes"] = df["fecha"].dt.to_period("M").astype(str)
-    df["dia_semana"] = df["fecha"].dt.dayofweek.map(lambda n: DIAS_SEMANA[n])
+    df["dia_semana"] = df["fecha"].dt.dayofweek.map(
+        lambda n: DIAS_SEMANA[n]
+    )
+
     return df
 
-
-@st.cache_data
 
 def cargar_gastos(ruta):
     df = leer_csv_seguro(ruta, ["fecha", "concepto", "valor"])
@@ -82,12 +85,26 @@ def cargar_gastos(ruta):
     df["valor"] = pd.to_numeric(df["valor"], errors="coerce")
     df["concepto"] = df["concepto"].fillna("").astype(str).str.strip()
     df = df.dropna(subset=["fecha", "valor"])
-    df = df[(df["valor"] >= 0) & (df["concepto"] != "")].copy()
+    df = df[
+        (df["valor"] >= 0) & (df["concepto"] != "")
+    ].copy()
+
     if df.empty:
-        return pd.DataFrame(columns=["fecha", "concepto", "valor", "mes", "concepto_normalizado"])
+        return pd.DataFrame(
+            columns=[
+                "fecha",
+                "concepto",
+                "valor",
+                "mes",
+                "concepto_normalizado"
+            ]
+        )
+
     df["mes"] = df["fecha"].dt.to_period("M").astype(str)
     df["concepto_normalizado"] = df["concepto"].map(normalizar_texto)
+
     return df
+
 
 
 def guardar_csv(df, ruta, columnas):
